@@ -9,7 +9,7 @@ from .paths import ConfigPath
 _DEFAULT_API_URL = "https://logs.skybrush.io/api/v1"
 _DEFAULT_ACCOUNT_URL = "https://account.skybrush.io"
 _CONFIG_FILENAME = "config.toml"
-_TOKEN_FILENAME = "token.txt"
+_TOKEN_FILENAME = "token.txt"  # noqa: S105
 
 
 @dataclass(kw_only=True, frozen=True, slots=True)
