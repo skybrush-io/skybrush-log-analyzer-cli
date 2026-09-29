@@ -50,6 +50,14 @@ class APIClient:
 
         return self.get_analysis(path)
 
+    def get_web_login_url(self) -> str:
+        """Acquires a web login URL for the user."""
+        link = self.request("/login-ticket/", method="POST")
+        login_url = link.get("login_url") if isinstance(link, dict) else None
+        if not isinstance(login_url, str) or not login_url:
+            raise ResponseParsingFailed()
+        return login_url
+
     def suggest(self, *, category: SuggestionCategory, title: str, content: str) -> Any:
         return self.request(
             "/suggestion/",
