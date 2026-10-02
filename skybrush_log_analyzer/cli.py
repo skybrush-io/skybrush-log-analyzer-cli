@@ -1,4 +1,5 @@
 import shutil
+import webbrowser
 from pathlib import Path
 from typing import Annotated
 
@@ -33,6 +34,22 @@ app = typer.Typer(
 config = load_config()
 auth = AuthClient(config)
 client = APIClient(config, auth)
+
+
+@app.command()
+def web() -> None:
+    """Open the log analysis web interface in the default browser."""
+    with typer_error_handler(config):
+        url = client.get_web_login_url()
+        print(f"Opening {url} ...")
+        webbrowser.open(url)
+
+
+@app.command()
+def account() -> None:
+    """Open the Skybrush account page in the default browser."""
+    print(f"Opening {config.account_url} ...")
+    webbrowser.open(config.account_url)
 
 
 @app.command()
