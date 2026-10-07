@@ -21,7 +21,7 @@ from .errors import (
     typer_error_handler,
 )
 from .paths import ConfigPath, DestinationPath, ResourcePath
-from .typing import SuggestionCategory, TestGroup
+from .typing import SuggestionCategory, SuggestionStatus, TestGroup
 from .utils import print_json
 
 app = typer.Typer(
@@ -185,6 +185,21 @@ def suggest(
     with typer_error_handler(config):
         result = client.suggest(category=category, title=title, content=content)
         print_json(result)
+
+
+@app.command()
+def suggestions(
+    status: Annotated[
+        SuggestionStatus | None,
+        typer.Option(
+            "--status",
+            help="Filter by feedback status. Omit to list all feedback.",
+        ),
+    ] = None,
+) -> None:
+    """List previously submitted feedback."""
+    with typer_error_handler(config):
+        print_json(client.get_suggestions(status=status))
 
 
 @app.command(name="login")
