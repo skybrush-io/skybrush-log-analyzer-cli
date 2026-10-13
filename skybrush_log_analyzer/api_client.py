@@ -7,7 +7,7 @@ from typing import IO, TYPE_CHECKING, Any
 import httpx2
 
 from .errors import BadRequest, ResponseParsingFailed, ServerError, Unauthenticated
-from .typing import SuggestionCategory, SuggestionStatus
+from .typing import SuggestionCategory
 from .utils import calculate_file_hash, set_query_params
 
 if TYPE_CHECKING:
@@ -71,10 +71,10 @@ class APIClient:
             },
         )
 
-    def get_suggestions(self, *, status: SuggestionStatus | None = None) -> Any:
+    def get_suggestions(self, *, released: bool | None = None) -> Any:
         return self.request(
             "/suggestion/",
-            params={"status": status} if status is not None else None,
+            params={"released": released} if released is not None else None,
         )
 
     def get_analysis(self, path: Path, *, extras: bool = False) -> Any:

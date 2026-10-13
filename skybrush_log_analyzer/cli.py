@@ -21,7 +21,7 @@ from .errors import (
     typer_error_handler,
 )
 from .paths import ConfigPath, DestinationPath, ResourcePath
-from .typing import SuggestionCategory, SuggestionStatus, TestGroup
+from .typing import SuggestionCategory, TestGroup
 from .utils import print_json
 
 app = typer.Typer(
@@ -189,17 +189,17 @@ def suggest(
 
 @app.command()
 def suggestions(
-    status: Annotated[
-        SuggestionStatus | None,
+    unreleased: Annotated[
+        bool,
         typer.Option(
-            "--status",
-            help="Filter by feedback status. Omit to list all feedback.",
+            "--unreleased",
+            help="List only feedback that has not been released yet. Omit to list all feedback.",
         ),
-    ] = None,
+    ] = False,
 ) -> None:
     """List previously submitted feedback."""
     with typer_error_handler(config):
-        print_json(client.get_suggestions(status=status))
+        print_json(client.get_suggestions(released=False if unreleased else None))
 
 
 @app.command(name="login")

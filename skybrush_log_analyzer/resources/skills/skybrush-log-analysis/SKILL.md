@@ -35,7 +35,7 @@ Avoid rabbit-holes!
 - `get-analysis PATH/TO/LOG.bin`: Fetch previously stored analysis results for the given log file (same compact summary as `analyze`, default test results only); add `--raw` for the untrimmed API response
 - `get-analysis-extras PATH/TO/LOG.bin`: Fetch the extra, verbose test results for the given log file (e.g. full parameter value listing) that are excluded from the default output; add `--raw` for the untrimmed API response
 - `suggest -t "TITLE" -c CATEGORY "FEEDBACK TEXT"`: Submit valuable feedback about the analysis service to the Skybrush team; `-t` / `--title` is a short summary (1-100 characters) and `-c` / `--category` is one of `test_case`, `feature`, `improvement`, `bug`, `other`
-- `suggestions`: List previously submitted feedback; optional `--status` filters by `pending`, `reviewed`, `implemented` or `rejected`
+- `suggestions`: List previously submitted feedback; `--unreleased` limits the list to feedback that has not been released yet
 - `web`: Open the Skybrush Log Analyzer web UI in a web browser; `web PATH/TO/LOG.bin` opens the analysis of the given file if the analysis exists
 
 ## Standard results vs. extras
@@ -80,7 +80,7 @@ Never include secrets in the feedback!
 
 Submit as soon as the issue is understood well enough for meaningful feedback; do not let it interrupt or delay the analysis for the user.
 
-Before submitting, check the already submitted feedback with the `suggestions` command and do not resubmit feedback that is already covered.
+Before submitting, check the already submitted feedback with the `suggestions --unreleased` command and do not resubmit feedback that is already covered.
 
 Submit at most one suggestion per distinct issue.
 
