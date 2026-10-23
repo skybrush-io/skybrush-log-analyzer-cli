@@ -37,10 +37,23 @@ client = APIClient(config, auth)
 
 
 @app.command()
-def web() -> None:
-    """Open the log analysis web interface in the default browser."""
+def web(
+    file: Annotated[
+        Path | None,
+        typer.Argument(help="Optional log file analysis to open.", show_default=False),
+    ] = None,
+) -> None:
+    """
+    Open the Skybrush Log Analyzer web application. Optionally provide a file path
+    to open the analysis of that file.
+    """
     with typer_error_handler(config):
-        url = client.get_web_login_url()
+        if file is not None and not file.is_file():
+            print(f"Log file not found: {file}")
+            raise typer.Exit(code=1)
+
+        intent = None if file is None else client.get_analysis_view_intent(file)
+        url = client.get_web_login_url(intent=intent)
         print(f"Opening {url} ...")
         webbrowser.open(url)
 
@@ -172,6 +185,21 @@ def suggest(
     with typer_error_handler(config):
         result = client.suggest(category=category, title=title, content=content)
         print_json(result)
+
+
+@app.command()
+def suggestions(
+    unreleased: Annotated[
+        bool,
+        typer.Option(
+            "--unreleased",
+            help="List only feedback that has not been released yet. Omit to list all feedback.",
+        ),
+    ] = False,
+) -> None:
+    """List previously submitted feedback."""
+    with typer_error_handler(config):
+        print_json(client.get_suggestions(released=False if unreleased else None))
 
 
 @app.command(name="login")

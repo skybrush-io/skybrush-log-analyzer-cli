@@ -8,7 +8,7 @@ import httpx2
 
 from .errors import BadRequest, ResponseParsingFailed, ServerError, Unauthenticated
 from .typing import SuggestionCategory
-from .utils import calculate_file_hash
+from .utils import calculate_file_hash, set_query_params
 
 if TYPE_CHECKING:
     from .auth_client import AuthClient
@@ -50,12 +50,14 @@ class APIClient:
 
         return self.get_analysis(path)
 
-    def get_web_login_url(self) -> str:
-        """Acquires a web login URL for the user."""
+    def get_web_login_url(self, *, intent: str | None = None) -> str:
+        """Acquires a web login URL for the user, optionally with a web view intent."""
         link = self.request("/login-ticket/", method="POST")
         login_url = link.get("login_url") if isinstance(link, dict) else None
         if not isinstance(login_url, str) or not login_url:
             raise ResponseParsingFailed()
+        if intent is not None:
+            login_url = set_query_params(login_url, intent=intent)
         return login_url
 
     def suggest(self, *, category: SuggestionCategory, title: str, content: str) -> Any:
@@ -69,12 +71,29 @@ class APIClient:
             },
         )
 
+    def get_suggestions(self, *, released: bool | None = None) -> Any:
+        return self.request(
+            "/suggestion/",
+            params={"released": released} if released is not None else None,
+        )
+
     def get_analysis(self, path: Path, *, extras: bool = False) -> Any:
         suffix = "/extras" if extras else ""
         return self.request(
             f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}{suffix}",
             params={"filename": path.name},
         )
+
+    def get_analysis_view_intent(self, path: Path) -> str:
+        """Returns the web view intent for the analysis of the given log file."""
+        result = self.request(
+            f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}/intent",
+            params={"filename": path.name},
+        )
+        intent = result.get("intent") if isinstance(result, dict) else None
+        if not isinstance(intent, str) or not intent:
+            raise ResponseParsingFailed()
+        return intent
 
     def request(
         self,

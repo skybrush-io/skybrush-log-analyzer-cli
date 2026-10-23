@@ -11,7 +11,10 @@ Invoke the CLI as `skybrush-log-analyzer <COMMAND>`. If `skybrush-log-analyzer` 
 
 On Windows set `PYTHONIOENCODING=utf-8` (or `PYTHONUTF8=1`) before invoking the CLI.
 
-If authentication fails, stop and tell the user! Do not try to fix it by reading env files or environment variables!
+When authentication fails:
+
+1. Check the output of `skybrush-log-analyzer auth-status`, then stop and tell the user the reason. Do not try to fix it by reading env files or environment variables!
+2. If the user is not authenticated, instruct them to run `skybrush-log-analyzer account` command to open a browser where the user can log in to their Skybrush account to create an API key. When the user has the API key, they must run `skybrush-log-analyzer login` to authenticate the CLI app.
 
 If you encounter an issue during the analysis process, stop and notify the user!
 
@@ -23,13 +26,17 @@ Avoid rabbit-holes!
 
 - `--help`: Show help
 - `version`: Get version info
+- `auth-status`: Show the current authentication status
+- `account`: Open the Skybrush Account page in a web browser, for example to create an API key for `login`
+- `login`: Authenticate the CLI application using an API key; login is system-wide by default, the `--local` flag restricts it to the current working directory
 - `tests`: List available log tests (`tests` lists the default tests; `tests extra` the extra, verbose ones; `tests all` both groups)
 - `analyze PATH/TO/LOG.bin`: Analyze a log file (runs all tests by default) - uploads the log, runs the analysis, and prints a compact summary of the default test results (omitting passing tests). Extra, verbose tests are run and results are stored too, but only shown via `get-analysis-extras`.
 - `analyze PATH/TO/LOG.bin -t TEST_NAME`: Run only the given tests, `-t` / `--test` can be repeated:`-t TEST_A -t TEST_B`
 - `get-analysis PATH/TO/LOG.bin`: Fetch previously stored analysis results for the given log file (same compact summary as `analyze`, default test results only); add `--raw` for the untrimmed API response
 - `get-analysis-extras PATH/TO/LOG.bin`: Fetch the extra, verbose test results for the given log file (e.g. full parameter value listing) that are excluded from the default output; add `--raw` for the untrimmed API response
 - `suggest -t "TITLE" -c CATEGORY "FEEDBACK TEXT"`: Submit valuable feedback about the analysis service to the Skybrush team; `-t` / `--title` is a short summary (1-100 characters) and `-c` / `--category` is one of `test_case`, `feature`, `improvement`, `bug`, `other`
-- `auth-status`: Show the current authentication status
+- `suggestions`: List previously submitted feedback; `--unreleased` limits the list to feedback that has not been released yet
+- `web`: Open the Skybrush Log Analyzer web UI in a web browser; `web PATH/TO/LOG.bin` opens the analysis of the given file if the analysis exists
 
 ## Standard results vs. extras
 
@@ -51,7 +58,7 @@ STEP 2: Did the user ask to test or analyze a specific component or topic?
 
 STEP 3: Analyze the log file using the `analyze` command
 
-STEP 4: Interpret and summarize the relevant results to the user
+STEP 4: Interpret and summarize the relevant results to the user, and inform the user that detailed test results can be check in the online version of Skybrush Log Analyzer with `skybrush-log-analyzer web PATH/TO/LOG.bin`.
 
 ## Submitting feedback
 
@@ -72,6 +79,8 @@ Regarding the feedback message:
 Never include secrets in the feedback!
 
 Submit as soon as the issue is understood well enough for meaningful feedback; do not let it interrupt or delay the analysis for the user.
+
+Before submitting, check the already submitted feedback with the `suggestions --unreleased` command and do not resubmit feedback that is already covered.
 
 Submit at most one suggestion per distinct issue.
 
