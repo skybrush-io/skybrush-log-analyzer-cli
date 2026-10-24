@@ -12,7 +12,7 @@ def filter_test_results(analysis: dict[str, Any], test_names: list[str] | None) 
     selected = set(test_names)
     filtered = dict(analysis)
     filtered["test_results"] = [
-        result for result in analysis.get("test_results", []) if result.get("test_name") in selected
+        result for result in analysis.get("test_results") or [] if result.get("test_name") in selected
     ]
     return filtered
 
