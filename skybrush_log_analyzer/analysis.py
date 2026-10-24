@@ -1,6 +1,22 @@
 from typing import Any
 
 
+def filter_test_results(analysis: dict[str, Any], test_names: list[str] | None) -> dict[str, Any]:
+    """
+    Returns the analysis with only the results of the given test names kept.
+
+    Returns the analysis unchanged when no test names are given.
+    """
+    if not test_names:
+        return analysis
+    selected = set(test_names)
+    filtered = dict(analysis)
+    filtered["test_results"] = [
+        result for result in analysis.get("test_results") or [] if result.get("test_name") in selected
+    ]
+    return filtered
+
+
 def to_agent_view(analysis: dict[str, Any]) -> dict[str, Any]:
     """
     Returns the compact, agent-facing view of an analysis API response.
