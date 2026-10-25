@@ -1,5 +1,36 @@
 from typing import Any
 
+from .utils import print_json
+
+
+def filter_test_results(analysis: dict[str, Any], test_names: list[str] | None) -> dict[str, Any]:
+    """
+    Returns the analysis with only the results of the given test names kept.
+
+    Returns the analysis unchanged when no test names are given.
+    """
+    if not test_names:
+        return analysis
+    selected = set(test_names)
+    filtered = dict(analysis)
+    filtered["test_results"] = [
+        result for result in analysis.get("test_results") or [] if result.get("test_name") in selected
+    ]
+    return filtered
+
+
+def print_analysis(result: Any, *, raw: bool, test: list[str] | None = None) -> None:
+    """
+    Prints an analysis API response.
+
+    With test names given, keeps only the results of the given tests
+    (whether the analysis was just generated or fetched). Trims the
+    response to the agent view unless raw printing is requested.
+    """
+    if test:
+        result = filter_test_results(result, test)
+    print_json(result if raw else to_agent_view(result))
+
 
 def to_agent_view(analysis: dict[str, Any]) -> dict[str, Any]:
     """

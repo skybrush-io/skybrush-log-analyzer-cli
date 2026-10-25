@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from .analysis import to_agent_view
+from .analysis import print_analysis
 from .api_client import APIClient
 from .auth_client import AuthClient
 from .config import Config, describe_config_location, load_config, login, logout
@@ -34,6 +34,19 @@ app = typer.Typer(
 config = load_config()
 auth = AuthClient(config)
 client = APIClient(config, auth)
+
+RawOption = Annotated[
+    bool,
+    typer.Option("--raw", help="Print the raw API response without trimming."),
+]
+TestOption = Annotated[
+    list[str] | None,
+    typer.Option(
+        "--test",
+        "-t",
+        help="Test name to include in the output (repeatable). Omit to include all tests.",
+    ),
+]
 
 
 @app.command()
@@ -89,62 +102,50 @@ def tests(
 @app.command()
 def analyze(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    test: Annotated[
-        list[str] | None,
-        typer.Option(
-            "--test",
-            "-t",
-            help="Test name to run (repeatable). Omit to run all tests.",
-        ),
-    ] = None,
+    raw: RawOption = False,
+    test: TestOption = None,
 ) -> None:
     """Upload the given log file, run the analysis on it, and print the results."""
-    if not file.is_file():
-        print(f"Log file not found: {file}")
-        raise typer.Exit(code=1)
-
+    _check_log_file(file)
     with typer_error_handler(config):
         # Refresh the API token before file upload to try to avoid hitting
         # token expiration during the operation.
         auth.refresh_token()
         result = client.analyze(file, test_names=test)
-        print_json(to_agent_view(result))
+        print_analysis(result, raw=raw, test=test)
 
 
 @app.command(name="get-analysis")
 def get_analysis(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    raw: Annotated[
-        bool,
-        typer.Option("--raw", help="Print the raw API response without trimming."),
-    ] = False,
+    raw: RawOption = False,
+    test: TestOption = None,
 ) -> None:
     """Fetch existing analysis for the given log file."""
-    if not file.is_file():
-        print(f"Log file not found: {file}")
-        raise typer.Exit(code=1)
-
+    _check_log_file(file)
     with typer_error_handler(config):
         result = client.get_analysis(file)
-        print_json(result if raw else to_agent_view(result))
+        print_analysis(result, raw=raw, test=test)
 
 
 @app.command(name="get-analysis-extras")
 def get_analysis_extras(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    raw: Annotated[
-        bool,
-        typer.Option("--raw", help="Print the raw API response without trimming."),
-    ] = False,
+    raw: RawOption = False,
+    test: TestOption = None,
 ) -> None:
     """Fetch the extra, verbose test results for the given log file."""
+    _check_log_file(file)
+    with typer_error_handler(config):
+        result = client.get_analysis(file, extras=True)
+        print_analysis(result, raw=raw, test=test)
+
+
+def _check_log_file(file: Path) -> None:
+    """Validates the log file and raises exception on error."""
     if not file.is_file():
         print(f"Log file not found: {file}")
         raise typer.Exit(code=1)
-
-    with typer_error_handler(config):
-        result = client.get_analysis(file, extras=True)
-        print_json(result if raw else to_agent_view(result))
 
 
 @app.command(name="suggest")
