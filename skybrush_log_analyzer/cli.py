@@ -1,11 +1,11 @@
 import shutil
 import webbrowser
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import typer
 
-from .analysis import filter_test_results, to_agent_view
+from .analysis import print_analysis
 from .api_client import APIClient
 from .auth_client import AuthClient
 from .config import Config, describe_config_location, load_config, login, logout
@@ -146,19 +146,6 @@ def _check_log_file(file: Path) -> None:
     if not file.is_file():
         print(f"Log file not found: {file}")
         raise typer.Exit(code=1)
-
-
-def print_analysis(result: Any, *, raw: bool, test: list[str] | None = None) -> None:
-    """
-    Prints an analysis API response.
-
-    With test names given, keeps only the results of the given tests
-    (whether the analysis was just generated or fetched). Trims the
-    response to the agent view unless raw printing is requested.
-    """
-    if test:
-        result = filter_test_results(result, test)
-    print_json(result if raw else to_agent_view(result))
 
 
 @app.command(name="suggest")
