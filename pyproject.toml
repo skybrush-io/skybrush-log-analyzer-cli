@@ -1,7 +1,7 @@
 [project]
 name = "skybrush-log-analyzer"
 version = "0.3.0"
-description = "Command line application for ArduPilot log analysis using https://logs.skybrush.io."
+description = "Command line application, agent skill, and client library for ArduPilot log analysis using https://logs.skybrush.io."
 readme = "README.md"
 authors = [
     { name = "Peter Volf", email = "do.volfp@gmail.com" },
@@ -11,12 +11,13 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "httpx2>=2.16.0",
-    "platformdirs>=4.13.5",
+    "platformdirs>=4.13.0",
     "typer>=0.27.3",
 ]
 
 [dependency-groups]
 dev = [
+    "mkdocstrings-python>=2.0.10",
     "mypy>=2.3.1",
     "poethepoet>=0.48.0",
     "ruff>=0.16.9",
@@ -24,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-skybrush-log-analyzer = "skybrush_log_analyzer.main:run"
+skybrush-log-analyzer = "skybrush_log_analyzer._cli:run"
 
 [build-system]
 requires = ["uv_build>=0.12.1,<0.13.0"]
