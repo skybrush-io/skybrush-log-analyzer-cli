@@ -1,7 +1,7 @@
 [project]
 name = "skybrush-log-analyzer"
 version = "0.3.0"
-description = "Command line application for ArduPilot log analysis using https://logs.skybrush.io."
+description = "Command line application, agent skill, and client library for ArduPilot log analysis using https://logs.skybrush.io."
 readme = "README.md"
 authors = [
     { name = "Peter Volf", email = "do.volfp@gmail.com" },
