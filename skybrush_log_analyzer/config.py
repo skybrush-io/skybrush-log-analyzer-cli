@@ -4,6 +4,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import ConfigError
 from .paths import ConfigPath
 
 _DEFAULT_API_URL = "https://logs.skybrush.io/api/v1"
@@ -34,71 +35,107 @@ class Config:
         return token or None
 
     def save_token(self, token: str) -> None:
-        """Saves the given token, creating parent directories as needed."""
-        self.token_path.parent.mkdir(parents=True, exist_ok=True)
-        self.token_path.write_text(token)
+        """
+        Saves the given token, creating parent directories as needed.
+
+        Raises:
+            ConfigError: The token could not be saved.
+        """
+        try:
+            self.token_path.parent.mkdir(parents=True, exist_ok=True)
+            self.token_path.write_text(token)
+        except OSError as e:
+            raise ConfigError(str(e)) from e
 
     def clear_token(self) -> None:
-        """Deletes the saved token if it exists."""
+        """
+        Deletes the saved token if it exists.
+
+        Raises:
+            ConfigError: The token could not be deleted.
+        """
         try:
-            self.token_path.unlink()
-        except FileNotFoundError:
-            pass
+            self.token_path.unlink(missing_ok=True)
+        except OSError as e:
+            raise ConfigError(str(e)) from e
 
 
-def load_config() -> Config:
+def load_config(config_dir: Path | None = None) -> Config:
     """
-    Loads the application config.
+    Loads the application config from the given config directory, using the
+    defaults when it has no config file.
 
-    Config directory search order:
+    Without a config directory, the first one with a config file is used,
+    in this order:
 
     - Project-local: `<current-working-directory>/.skybrush-log-analyzer/`
     - Global: `<user-config-dir>/skybrush-log-analyzer/`
-    """
-    for directory in (ConfigPath.dir(local=True), ConfigPath.dir(local=False)):
-        path = directory / _CONFIG_FILENAME
-        if path.is_file():
-            data = _read_toml(path)
-            return Config(
-                api_key=data.get("api_key"),
-                api_url=data.get("api_url", _DEFAULT_API_URL),
-                account_url=data.get("account_url", _DEFAULT_ACCOUNT_URL),
-                config_dir=directory,
-            )
 
+    The global one is used when neither has a config file.
+    """
+    if config_dir is None:
+        local_dir = ConfigPath.dir(local=True)
+        config_dir = local_dir if (local_dir / _CONFIG_FILENAME).is_file() else ConfigPath.dir(local=False)
+
+    data = _read_toml(config_dir / _CONFIG_FILENAME)
     return Config(
-        api_key=None,
-        api_url=_DEFAULT_API_URL,
-        account_url=_DEFAULT_ACCOUNT_URL,
-        config_dir=ConfigPath.dir(local=False),
+        api_key=data.get("api_key"),
+        api_url=data.get("api_url", _DEFAULT_API_URL),
+        account_url=data.get("account_url", _DEFAULT_ACCOUNT_URL),
+        config_dir=config_dir,
     )
 
 
-def login(api_key: str, *, local: bool = False) -> None:
+def save_api_key(config_dir: Path, api_key: str, *, api_url: str | None = None) -> None:
     """
-    Stores the given API key in the application's config file.
+    Stores the given API key in the config file of the given config directory.
+
+    The config file is rewritten with its flat string settings, losing
+    comments and any other values.
 
     Arguments:
+        config_dir: The config directory whose config file is updated.
         api_key: The API key to store.
-        local: Whether the project-local or the global config file
-            should be updated.
+        api_url: The API URL to store along with the API key, or `None`
+            to leave it unchanged.
+
+    Raises:
+        ConfigError: The config file could not be read or written.
     """
-    path = ConfigPath.dir(local=local) / _CONFIG_FILENAME
-    data = _read_toml(path)
-    data["api_key"] = api_key
-    _write_toml(path, data)
+    path = config_dir / _CONFIG_FILENAME
+    try:
+        data = _read_toml(path)
+        data["api_key"] = api_key
+        if api_url is not None:
+            data["api_url"] = api_url
+        _write_toml(path, data)
+    except OSError as e:
+        raise ConfigError(str(e)) from e
 
 
-def logout(config: Config) -> None:
+def delete_api_key(config: Config) -> None:
     """
-    Removes the config file for the given `Config` and
+    Removes the API key from the config file of the given `Config` and
     clears the corresponding token if it exists.
 
+    A project-local config file is deleted. Any other config file is
+    rewritten with its remaining flat string settings, losing comments and
+    any other values, and deleted when no setting is left in it, which
+    includes an unparseable file.
+
+    Raises:
+        ConfigError: The config file or the token could not be updated.
     """
+    path = config.config_dir / _CONFIG_FILENAME
     try:
-        (config.config_dir / _CONFIG_FILENAME).unlink()
-    except FileNotFoundError:
-        pass
+        data = {} if config.config_dir == ConfigPath.dir(local=True) else _read_toml(path)
+        data.pop("api_key", None)
+        if data:
+            _write_toml(path, data)
+        else:
+            path.unlink(missing_ok=True)
+    except OSError as e:
+        raise ConfigError(str(e)) from e
 
     config.clear_token()
 

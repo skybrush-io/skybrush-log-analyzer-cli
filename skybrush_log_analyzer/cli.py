@@ -1,24 +1,29 @@
 import shutil
 import webbrowser
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
-from .analysis import print_analysis
+from .analysis import compact, drop_pass_messages, select_tests
 from .api_client import APIClient
-from .auth_client import AuthClient
-from .config import Config, describe_config_location, load_config, login, logout
+from .config import Config, describe_config_location, load_config
 from .errors import (
     AccountUnreachable,
+    APIUnreachable,
     ApplicationError,
+    ApplicationErrorWithMessage,
     BadRequest,
     ConfigError,
     InvalidAPIKey,
+    NotFound,
     ResponseParsingFailed,
     ServerError,
     Unauthenticated,
-    typer_error_handler,
+    UnknownTests,
 )
 from .paths import ConfigPath, DestinationPath, ResourcePath
 from .typing import SuggestionCategory, TestGroup
@@ -32,12 +37,11 @@ app = typer.Typer(
 )
 
 config = load_config()
-auth = AuthClient(config)
-client = APIClient(config, auth)
+client = APIClient(config)
 
-RawOption = Annotated[
+DetailedOption = Annotated[
     bool,
-    typer.Option("--raw", help="Print the raw API response without trimming."),
+    typer.Option("--detailed", help="Include the messages of passing tests too."),
 ]
 TestOption = Annotated[
     list[str] | None,
@@ -60,12 +64,17 @@ def web(
     Open the Skybrush Log Analyzer web application. Optionally provide a file path
     to open the analysis of that file.
     """
-    with typer_error_handler(config):
+    with _typer_error_handler(config):
         if file is not None and not file.is_file():
             print(f"Log file not found: {file}")
             raise typer.Exit(code=1)
 
-        intent = None if file is None else client.get_analysis_view_intent(file)
+        intent = None
+        if file is not None:
+            try:
+                intent = client.get_analysis_view_intent(file)
+            except NotFound:
+                print(f"No analysis found for {file}, opening the web application without it.")
         url = client.get_web_login_url(intent=intent)
         print(f"Opening {url} ...")
         webbrowser.open(url)
@@ -81,7 +90,7 @@ def account() -> None:
 @app.command()
 def version() -> None:
     """Show analysis backend version info."""
-    with typer_error_handler(config):
+    with _typer_error_handler(config):
         print_json(client.version())
 
 
@@ -95,57 +104,51 @@ def tests(
     ] = "default",
 ) -> None:
     """List available ArduPilot log tests."""
-    with typer_error_handler(config):
+    with _typer_error_handler(config):
         print_json(client.tests(group))
 
 
 @app.command()
 def analyze(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    raw: RawOption = False,
+    detailed: DetailedOption = False,
     test: TestOption = None,
 ) -> None:
     """Upload the given log file, run the analysis on it, and print the results."""
     _check_log_file(file)
-    with typer_error_handler(config):
-        # Refresh the API token before file upload to try to avoid hitting
-        # token expiration during the operation.
-        auth.refresh_token()
+    with _typer_error_handler(config):
         result = client.analyze(file, test_names=test)
-        print_analysis(result, raw=raw, test=test)
+        _print_analysis(result, detailed=detailed, tests=test)
 
 
 @app.command(name="get-analysis")
 def get_analysis(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    raw: RawOption = False,
+    detailed: DetailedOption = False,
     test: TestOption = None,
 ) -> None:
     """Fetch existing analysis for the given log file."""
     _check_log_file(file)
-    with typer_error_handler(config):
-        result = client.get_analysis(file)
-        print_analysis(result, raw=raw, test=test)
+    with _typer_error_handler(config):
+        if test:
+            client.validate_test_names(test, "default")
+        result = _get_stored_analysis(file, extras=False)
+        _print_analysis(result, detailed=detailed, tests=test)
 
 
 @app.command(name="get-analysis-extras")
 def get_analysis_extras(
     file: Annotated[Path, typer.Argument(help="Path to the ArduPilot log file.")],
-    raw: RawOption = False,
+    detailed: DetailedOption = False,
     test: TestOption = None,
 ) -> None:
     """Fetch the extra, verbose test results for the given log file."""
     _check_log_file(file)
-    with typer_error_handler(config):
-        result = client.get_analysis(file, extras=True)
-        print_analysis(result, raw=raw, test=test)
-
-
-def _check_log_file(file: Path) -> None:
-    """Validates the log file and raises exception on error."""
-    if not file.is_file():
-        print(f"Log file not found: {file}")
-        raise typer.Exit(code=1)
+    with _typer_error_handler(config):
+        if test:
+            client.validate_test_names(test, "extra")
+        result = _get_stored_analysis(file, extras=True)
+        _print_analysis(result, detailed=detailed, tests=test)
 
 
 @app.command(name="suggest")
@@ -183,7 +186,7 @@ def suggest(
             "Feedback title must be 1-100 characters long (excluding surrounding whitespace)."
         )
 
-    with typer_error_handler(config):
+    with _typer_error_handler(config):
         result = client.suggest(category=category, title=title, content=content)
         print_json(result)
 
@@ -199,36 +202,29 @@ def suggestions(
     ] = False,
 ) -> None:
     """List previously submitted feedback."""
-    with typer_error_handler(config):
+    with _typer_error_handler(config):
         print_json(client.get_suggestions(released=False if unreleased else None))
 
 
 @app.command(name="login")
 def login_cmd(
     api_key: Annotated[str, typer.Option(prompt="API key")],
+    api_url: Annotated[
+        str | None,
+        typer.Option("--api-url", help="Analysis API URL to use and store, e.g. a local backend."),
+    ] = None,
     local: Annotated[
         bool,
         typer.Option("--local", help="Whether to update the local config instead of the global one."),
     ] = False,
 ) -> None:
     """Log in with a Skybrush API key."""
-    candidate = Config(
-        api_key=api_key,
-        api_url=config.api_url,
-        account_url=config.account_url,
-        config_dir=ConfigPath.dir(local=local),
-    )
-    candidate_auth = AuthClient(candidate)
-    candidate_client = APIClient(candidate, candidate_auth)
+    target = load_config(ConfigPath.dir(local=local))
+    if api_url is not None:
+        target = replace(target, api_url=api_url)
 
-    with typer_error_handler(candidate):
-        # Mint a fresh token with the candidate key and check backend acceptance.
-        candidate_auth.refresh_token()
-        candidate_client.version()
-        try:
-            login(api_key, local=local)
-        except OSError as e:
-            raise ConfigError(str(e)) from e
+    with _typer_error_handler(target):
+        APIClient.login(target.config_dir, api_key, api_url=api_url)
     print("Logged in.")
 
 
@@ -239,11 +235,8 @@ def logout_cmd() -> None:
         print("Not logged in.")
         raise typer.Exit(code=1)
 
-    with typer_error_handler(config):
-        try:
-            logout(config)
-        except OSError as e:
-            raise ConfigError(str(e)) from e
+    with _typer_error_handler(config):
+        client.logout()
     print(f"Logged out ({describe_config_location(config)}).")
 
 
@@ -285,8 +278,7 @@ def auth_status() -> None:
 
     print(f"Using {describe_config_location(config)}.")
     try:
-        auth.refresh_token()
-        client.version()
+        client.verify_credentials()
         print(f"Authenticated at {config.account_url}.")
     except InvalidAPIKey:
         print(f"API key is invalid or has been revoked. Create a new one at {config.account_url}.")
@@ -294,12 +286,95 @@ def auth_status() -> None:
     except AccountUnreachable:
         print(f"Could not reach {config.account_url} to refresh the API token.")
         raise typer.Exit(code=1) from None
+    except APIUnreachable:
+        print(f"Could not reach {config.api_url} to validate the API token.")
+        raise typer.Exit(code=1) from None
     except Unauthenticated:
         print("Backend rejected the API token.")
         raise typer.Exit(code=1) from None
-    except (BadRequest, ResponseParsingFailed, ServerError):
+    except BadRequest as e:
+        print(f"Backend could not validate the API token: {e.message}")
+        raise typer.Exit(code=1) from None
+    except (ResponseParsingFailed, ServerError):
         print("Backend could not validate the API token.")
         raise typer.Exit(code=1) from None
     except ApplicationError:
         print("Authentication status check failed.")
         raise typer.Exit(code=1) from None
+
+
+def _check_log_file(file: Path) -> None:
+    """Validates the log file and raises exception on error."""
+    if not file.is_file():
+        print(f"Log file not found: {file}")
+        raise typer.Exit(code=1)
+
+
+def _get_stored_analysis(file: Path, *, extras: bool) -> dict[str, Any]:
+    """Fetches the stored analysis of the given log file, exiting with a hint when there is none."""
+    try:
+        return client.get_analysis(file, extras=extras)
+    except NotFound:
+        print(f"No analysis found for {file}. Run the analyze command to create it.")
+        raise typer.Exit(code=1) from None
+
+
+def _print_analysis(analysis: dict[str, Any], *, detailed: bool, tests: list[str] | None) -> None:
+    """
+    Prints the compact view of an analysis API response.
+
+    With test names given, keeps only the results of the given tests. Omits the
+    messages of passing tests unless detailed output is requested.
+    """
+    if tests:
+        analysis = select_tests(analysis, tests)
+    if not detailed:
+        analysis = drop_pass_messages(analysis)
+    view = compact(analysis)
+    if not view["test_results"]:
+        view["note"] = "No test results in this group; run the analyze command to produce them."
+    print_json(view)
+
+
+@contextmanager
+def _typer_error_handler(config: Config) -> Iterator[None]:  # noqa: C901
+    try:
+        yield
+    except typer.Exit:
+        raise
+    except Unauthenticated as e:
+        print("Authentication error. Check your API key.")
+        raise typer.Exit(1) from e
+    except InvalidAPIKey as e:
+        print(f"Your API key is invalid or has been revoked. Create a new one at {config.account_url}.")
+        raise typer.Exit(1) from e
+    except AccountUnreachable as e:
+        print(f"Could not reach {config.account_url} to acquire an API token.")
+        raise typer.Exit(1) from e
+    except APIUnreachable as e:
+        print(f"Could not reach {config.api_url}.")
+        raise typer.Exit(1) from e
+    except BadRequest as e:
+        print(f"Bad request: {e.message}")
+        raise typer.Exit(1) from e
+    except ConfigError as e:
+        print(f"Config error: {e.message}")
+        raise typer.Exit(1) from e
+    except ServerError as e:
+        print("An error occurred on the server.")
+        raise typer.Exit(1) from e
+    except ResponseParsingFailed as e:
+        print("Server returned non-JSON response.")
+        raise typer.Exit(1) from e
+    except UnknownTests as e:
+        print(f"{e.message}. Use the tests command to list the available tests.")
+        raise typer.Exit(1) from e
+    except ApplicationErrorWithMessage as e:
+        print(f"An unexpected error occurred: {e.message}")
+        raise typer.Exit(1) from e
+    except ApplicationError as e:
+        print("An unexpected error occurred.")
+        raise typer.Exit(1) from e
+    except Exception as e:
+        print("An unexpected error occurred.")
+        raise typer.Exit(1) from e
