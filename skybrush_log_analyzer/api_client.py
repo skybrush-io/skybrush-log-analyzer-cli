@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 from typing import IO, Any, Self
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx2
 
-from .auth_client import AuthClient
-from .config import Config, delete_api_key, load_config, save_api_key
+from ._auth_client import AuthClient
+from ._config_store import clear_token, delete_api_key, save_api_key
+from .config import Config
 from .errors import (
     APIUnreachable,
     BadRequest,
@@ -20,10 +23,11 @@ from .errors import (
     UnknownTests,
 )
 from .typing import SuggestionCategory, TestGroup
-from .utils import calculate_file_hash, set_query_params
 
 
 class APIClient:
+    """Client of the Skybrush Log Analyzer API."""
+
     __slots__ = ("_auth", "_config")
 
     def __init__(self, config: Config) -> None:
@@ -52,7 +56,7 @@ class APIClient:
             ConfigError: The token or the API key could not be stored.
             ApplicationError: The API could not validate the token.
         """
-        config = load_config(config_dir)
+        config = Config.load(config_dir)
         client = cls(
             replace(config, api_key=api_key, api_url=config.api_url if api_url is None else api_url)
         )
@@ -62,12 +66,13 @@ class APIClient:
         except BaseException:
             # The stored token may belong to the API key that failed to log in.
             with suppress(ConfigError):
-                client.config.clear_token()
+                clear_token(config_dir)
             raise
         return client
 
     @property
     def config(self) -> Config:
+        """The config of the client."""
         return self._config
 
     def logout(self) -> None:
@@ -79,7 +84,7 @@ class APIClient:
             ConfigError: The API key or the token could not be removed.
         """
         self._auth.invalidate()
-        delete_api_key(self._config)
+        delete_api_key(self._config.config_dir)
 
     def verify_credentials(self) -> None:
         """
@@ -97,21 +102,23 @@ class APIClient:
         self.version()
 
     def version(self) -> dict[str, Any]:
-        return _json_object(self.request("/version"))
+        """Returns the version info of the API."""
+        return _json_object(self._request("/version"))
 
-    def tests(self, group: str = "default") -> list[dict[str, Any]]:
+    def tests(self, group: TestGroup = "default") -> list[dict[str, Any]]:
+        """Returns the descriptions of the available tests in the given test group."""
         if group == "all":
             # No "all" listing route on the backend; merge the two listings.
             merged: list[dict[str, Any]] = []
             seen: set[str | None] = set()
-            for listing in (self.request("/tests"), self.request("/tests/extras")):
+            for listing in (self._request("/tests"), self._request("/tests/extras")):
                 for test in _json_object_list(listing):
                     name = test.get("name")
                     if name not in seen:
                         seen.add(name)
                         merged.append(test)
             return merged
-        return _json_object_list(self.request("/tests/extras" if group == "extra" else "/tests"))
+        return _json_object_list(self._request("/tests/extras" if group == "extra" else "/tests"))
 
     def validate_test_names(self, names: list[str], group: TestGroup = "default") -> None:
         """
@@ -129,19 +136,21 @@ class APIClient:
         Uploads the given log file, runs the analysis on it, and returns the stored analysis.
 
         Runs only the given tests when test names are given, after validating them
-        against the full test listing.
+        against the full test listing. The returned analysis holds the results of the
+        default tests, merged with those of the extra tests when some of the given
+        tests have no default result.
 
         Raises:
             UnknownTests: Some of the test names are not in any test group.
         """
-        if test_names is not None:
-            self.validate_test_names(test_names, "all")
         # Refresh the API token before file upload to try to avoid hitting
         # token expiration during the operation.
         self._auth.refresh_token()
+        if test_names is not None:
+            self.validate_test_names(test_names, "all")
         # POST returns the new run only; test results live on the merged by-hash view.
         with path.open("rb") as f:
-            self.request(
+            self._request(
                 "/analysis/",
                 method="POST",
                 files={"file": (path.name, f, "application/octet-stream")},
@@ -149,19 +158,25 @@ class APIClient:
                 timeout=30,
             )
 
-        return self.get_analysis(path)
+        analysis = self.get_analysis(path)
+        results = analysis.get("test_results") or []
+        if test_names is not None and not set(test_names) <= {r.get("test_name") for r in results}:
+            extra_results = self.get_analysis(path, extras=True).get("test_results") or []
+            analysis = {**analysis, "test_results": [*results, *extra_results]}
+        return analysis
 
     def get_web_login_url(self, *, intent: str | None = None) -> str:
         """Acquires a web login URL for the user, optionally with a web view intent."""
-        login_url = _json_object(self.request("/login-ticket/", method="POST")).get("login_url")
+        login_url = _json_object(self._request("/login-ticket/", method="POST")).get("login_url")
         if not isinstance(login_url, str) or not login_url:
             raise ResponseParsingFailed()
         if intent is not None:
-            login_url = set_query_params(login_url, intent=intent)
+            login_url = _set_query_params(login_url, intent=intent)
         return login_url
 
     def suggest(self, *, category: SuggestionCategory, title: str, content: str) -> dict[str, Any]:
-        response = self.request(
+        """Submits feedback about the analysis service and returns the submission result."""
+        response = self._request(
             "/suggestion/",
             method="POST",
             json={
@@ -173,24 +188,47 @@ class APIClient:
         return _json_object(response)
 
     def get_suggestions(self, *, released: bool | None = None) -> list[dict[str, Any]]:
-        response = self.request(
+        """
+        Returns the previously submitted feedback.
+
+        Arguments:
+            released: Whether to list only released (`True`) or only unreleased
+                (`False`) feedback, or `None` to list all of it.
+        """
+        response = self._request(
             "/suggestion/",
             params={"released": released} if released is not None else None,
         )
         return _json_object_list(response)
 
     def get_analysis(self, path: Path, *, extras: bool = False) -> dict[str, Any]:
+        """
+        Returns the stored analysis of the given log file.
+
+        Arguments:
+            path: The log file.
+            extras: Whether to return the results of the extra, verbose tests
+                instead of the default ones.
+
+        Raises:
+            NotFound: The log file has not been analyzed yet.
+        """
         suffix = "/extras" if extras else ""
-        response = self.request(
-            f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}{suffix}",
+        response = self._request(
+            f"/analysis/by-hash/{calculate_file_hash(path)}{suffix}",
             params={"filename": path.name},
         )
         return _json_object(response)
 
     def get_analysis_view_intent(self, path: Path) -> str:
-        """Returns the web view intent for the analysis of the given log file."""
-        result = self.request(
-            f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}/intent",
+        """
+        Returns the web view intent for the analysis of the given log file.
+
+        Raises:
+            NotFound: The log file has not been analyzed yet.
+        """
+        result = self._request(
+            f"/analysis/by-hash/{calculate_file_hash(path)}/intent",
             params={"filename": path.name},
         )
         intent = _json_object(result).get("intent")
@@ -198,7 +236,7 @@ class APIClient:
             raise ResponseParsingFailed()
         return intent
 
-    def request(
+    def _request(
         self,
         path: str,
         *,
@@ -271,7 +309,31 @@ class APIClient:
             ) as client:
                 return client.request(method, path, files=files, data=data, params=params, json=json)
         except httpx2.HTTPError as e:
-            raise APIUnreachable(str(e)) from e
+            raise APIUnreachable(str(e), url=self._config.api_url) from e
+
+
+def calculate_file_hash(path: Path) -> str:
+    """Returns the SHA-256 hex digest of the content of the given file."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _set_query_params(url: str, **params: str) -> str:
+    """
+    Sets the given query params on the URL.
+
+    If a set param was present in `url`, it is overwritten with the new value.
+    """
+    parts = urlsplit(url)
+    query = [
+        *(
+            (name, value)
+            for name, value in parse_qsl(parts.query, keep_blank_values=True)
+            if name not in params
+        ),
+        *params.items(),
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _json_object(data: Any) -> dict[str, Any]:

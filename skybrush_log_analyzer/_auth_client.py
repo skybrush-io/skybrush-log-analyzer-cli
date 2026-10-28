@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import httpx2
 
+from ._config_store import clear_token, load_token, save_token
 from .errors import AccountUnreachable, InvalidAPIKey, Unauthenticated
 
 if TYPE_CHECKING:
@@ -45,7 +46,7 @@ class AuthClient:
         if self._invalidated:
             raise Unauthenticated()
         self._token = None
-        self._config.clear_token()
+        clear_token(self._config.config_dir)
         self._request_new_token()
 
     def invalidate(self) -> None:
@@ -68,7 +69,7 @@ class AuthClient:
         if self._token is not None:
             return self._token
 
-        token = self._config.load_token()
+        token = load_token(self._config.config_dir)
         if token is not None:
             self._token = token
             return token
@@ -88,33 +89,36 @@ class AuthClient:
         if not self._config.api_key:
             raise Unauthenticated()
 
+        account_url = self._config.account_url
         try:
-            with httpx2.Client(base_url=self._config.account_url, timeout=5) as client:
+            with httpx2.Client(base_url=account_url, timeout=5) as client:
                 response = client.post(
                     "/api/get-api-token",
                     json={"apiKey": self._config.api_key},
                 )
         except httpx2.HTTPError as e:
-            raise AccountUnreachable(str(e)) from e
+            raise AccountUnreachable(str(e), url=account_url) from e
 
         if response.status_code in (401, 403):
-            raise InvalidAPIKey("API key rejected by account app")
+            raise InvalidAPIKey("API key rejected by account app", url=account_url)
 
         if response.status_code != 200:
-            raise AccountUnreachable(f"Unexpected status from account app: {response.status_code}")
+            raise AccountUnreachable(
+                f"Unexpected status from account app: {response.status_code}", url=account_url
+            )
 
         try:
             body = response.json()
         except Exception as e:
-            raise AccountUnreachable("Account app returned non-JSON response") from e
+            raise AccountUnreachable("Account app returned non-JSON response", url=account_url) from e
 
         token = body.get("result") if isinstance(body, dict) else None
         if not isinstance(token, str) or not token:
-            raise AccountUnreachable("Account app response missing token result")
+            raise AccountUnreachable("Account app response missing token result", url=account_url)
 
         # The client may have been invalidated while the token was being acquired.
         if self._invalidated:
             raise Unauthenticated()
-        self._config.save_token(token)
+        save_token(self._config.config_dir, token)
         self._token = token
         return token

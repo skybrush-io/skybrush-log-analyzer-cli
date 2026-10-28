@@ -1,16 +1,18 @@
+import importlib.resources
+import json
 import shutil
 import webbrowser
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 
 import typer
 
+from ._config_store import ConfigPath
 from .analysis import compact, drop_pass_messages, select_tests
 from .api_client import APIClient
-from .config import Config, describe_config_location, load_config
+from .config import Config
 from .errors import (
     AccountUnreachable,
     APIUnreachable,
@@ -25,9 +27,7 @@ from .errors import (
     Unauthenticated,
     UnknownTests,
 )
-from .paths import ConfigPath, DestinationPath, ResourcePath
 from .typing import SuggestionCategory, TestGroup
-from .utils import print_json
 
 app = typer.Typer(
     name="ArduPilot log analysis CLI",
@@ -36,7 +36,7 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 
-config = load_config()
+config = Config.load()
 client = APIClient(config)
 
 DetailedOption = Annotated[
@@ -64,7 +64,7 @@ def web(
     Open the Skybrush Log Analyzer web application. Optionally provide a file path
     to open the analysis of that file.
     """
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         if file is not None and not file.is_file():
             print(f"Log file not found: {file}")
             raise typer.Exit(code=1)
@@ -90,8 +90,8 @@ def account() -> None:
 @app.command()
 def version() -> None:
     """Show analysis backend version info."""
-    with _typer_error_handler(config):
-        print_json(client.version())
+    with _typer_error_handler():
+        _print_json(client.version())
 
 
 @app.command()
@@ -104,8 +104,8 @@ def tests(
     ] = "default",
 ) -> None:
     """List available ArduPilot log tests."""
-    with _typer_error_handler(config):
-        print_json(client.tests(group))
+    with _typer_error_handler():
+        _print_json(client.tests(group))
 
 
 @app.command()
@@ -116,7 +116,7 @@ def analyze(
 ) -> None:
     """Upload the given log file, run the analysis on it, and print the results."""
     _check_log_file(file)
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         result = client.analyze(file, test_names=test)
         _print_analysis(result, detailed=detailed, tests=test)
 
@@ -129,7 +129,7 @@ def get_analysis(
 ) -> None:
     """Fetch existing analysis for the given log file."""
     _check_log_file(file)
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         if test:
             client.validate_test_names(test, "default")
         result = _get_stored_analysis(file, extras=False)
@@ -144,7 +144,7 @@ def get_analysis_extras(
 ) -> None:
     """Fetch the extra, verbose test results for the given log file."""
     _check_log_file(file)
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         if test:
             client.validate_test_names(test, "extra")
         result = _get_stored_analysis(file, extras=True)
@@ -186,9 +186,9 @@ def suggest(
             "Feedback title must be 1-100 characters long (excluding surrounding whitespace)."
         )
 
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         result = client.suggest(category=category, title=title, content=content)
-        print_json(result)
+        _print_json(result)
 
 
 @app.command()
@@ -202,8 +202,8 @@ def suggestions(
     ] = False,
 ) -> None:
     """List previously submitted feedback."""
-    with _typer_error_handler(config):
-        print_json(client.get_suggestions(released=False if unreleased else None))
+    with _typer_error_handler():
+        _print_json(client.get_suggestions(released=False if unreleased else None))
 
 
 @app.command(name="login")
@@ -219,12 +219,8 @@ def login_cmd(
     ] = False,
 ) -> None:
     """Log in with a Skybrush API key."""
-    target = load_config(ConfigPath.dir(local=local))
-    if api_url is not None:
-        target = replace(target, api_url=api_url)
-
-    with _typer_error_handler(target):
-        APIClient.login(target.config_dir, api_key, api_url=api_url)
+    with _typer_error_handler():
+        APIClient.login(ConfigPath.dir(local=local), api_key, api_url=api_url)
     print("Logged in.")
 
 
@@ -235,9 +231,9 @@ def logout_cmd() -> None:
         print("Not logged in.")
         raise typer.Exit(code=1)
 
-    with _typer_error_handler(config):
+    with _typer_error_handler():
         client.logout()
-    print(f"Logged out ({describe_config_location(config)}).")
+    print(f"Logged out ({_describe_config_location(config)}).")
 
 
 @app.command(name="add-skill")
@@ -258,8 +254,8 @@ def add_skill(
     ] = False,
 ) -> None:
     """Install the bundled agent skill for the current user."""
-    source = ResourcePath.skill()
-    dest = DestinationPath.skill(local=local, claude=claude)
+    source = _ResourcePath.skill()
+    dest = _DestinationPath.skill(local=local, claude=claude)
     if dest.exists():
         if not force:
             print(f"{dest} already exists, use --force to overwrite.")
@@ -276,7 +272,7 @@ def auth_status() -> None:
         print("No API key configured. Use the login command to log in.")
         raise typer.Exit(code=1)
 
-    print(f"Using {describe_config_location(config)}.")
+    print(f"Using {_describe_config_location(config)}.")
     try:
         client.verify_credentials()
         print(f"Authenticated at {config.account_url}.")
@@ -301,6 +297,10 @@ def auth_status() -> None:
     except ApplicationError:
         print("Authentication status check failed.")
         raise typer.Exit(code=1) from None
+
+
+def run() -> None:
+    app()
 
 
 def _check_log_file(file: Path) -> None:
@@ -333,11 +333,11 @@ def _print_analysis(analysis: dict[str, Any], *, detailed: bool, tests: list[str
     view = compact(analysis)
     if not view["test_results"]:
         view["note"] = "No test results in this group; run the analyze command to produce them."
-    print_json(view)
+    _print_json(view)
 
 
 @contextmanager
-def _typer_error_handler(config: Config) -> Iterator[None]:  # noqa: C901
+def _typer_error_handler() -> Iterator[None]:  # noqa: C901
     try:
         yield
     except typer.Exit:
@@ -346,13 +346,13 @@ def _typer_error_handler(config: Config) -> Iterator[None]:  # noqa: C901
         print("Authentication error. Check your API key.")
         raise typer.Exit(1) from e
     except InvalidAPIKey as e:
-        print(f"Your API key is invalid or has been revoked. Create a new one at {config.account_url}.")
+        print(f"Your API key is invalid or has been revoked. Create a new one at {e.url}.")
         raise typer.Exit(1) from e
     except AccountUnreachable as e:
-        print(f"Could not reach {config.account_url} to acquire an API token.")
+        print(f"Could not reach {e.url} to acquire an API token.")
         raise typer.Exit(1) from e
     except APIUnreachable as e:
-        print(f"Could not reach {config.api_url}.")
+        print(f"Could not reach {e.url}.")
         raise typer.Exit(1) from e
     except BadRequest as e:
         print(f"Bad request: {e.message}")
@@ -364,7 +364,7 @@ def _typer_error_handler(config: Config) -> Iterator[None]:  # noqa: C901
         print("An error occurred on the server.")
         raise typer.Exit(1) from e
     except ResponseParsingFailed as e:
-        print("Server returned non-JSON response.")
+        print("Server returned an unexpected response.")
         raise typer.Exit(1) from e
     except UnknownTests as e:
         print(f"{e.message}. Use the tests command to list the available tests.")
@@ -378,3 +378,42 @@ def _typer_error_handler(config: Config) -> Iterator[None]:  # noqa: C901
     except Exception as e:
         print("An unexpected error occurred.")
         raise typer.Exit(1) from e
+
+
+def _describe_config_location(config: Config) -> str:
+    """Human-readable label for the config directory corresponding to the given config."""
+    if config.config_dir == ConfigPath.dir(local=True):
+        return f"local config at {config.config_dir}"
+    if config.config_dir == ConfigPath.dir(local=False):
+        return f"global config at {config.config_dir}"
+    return f"custom config at {config.config_dir}"
+
+
+def _print_json(data: Any) -> None:
+    """Dumps the given data to JSON and prints the result."""
+    print(json.dumps(data, ensure_ascii=False, allow_nan=False))
+
+
+class _ResourcePath:
+    @classmethod
+    def skill(cls) -> Path:
+        """Path to the bundled agent skill."""
+        return cls._resources_root() / "skills" / "skybrush-log-analysis"
+
+    @classmethod
+    def _resources_root(cls) -> Path:
+        """Path to the root of the bundled resources."""
+        return cast(Path, importlib.resources.files("skybrush_log_analyzer") / "resources")
+
+
+class _DestinationPath:
+    @classmethod
+    def skill(cls, *, local: bool, claude: bool = False) -> Path:
+        """Installation path of the agent skill in the given scope."""
+        base = Path.cwd() if local else Path.home()
+        harness_dir = ".claude" if claude else ".agents"
+        return base / harness_dir / "skills" / "skybrush-log-analysis"
+
+
+if __name__ == "__main__":
+    run()
