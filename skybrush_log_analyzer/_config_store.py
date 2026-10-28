@@ -105,7 +105,7 @@ def save_token(config_dir: Path, token: str) -> None:
     """
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
-        (config_dir / _TOKEN_FILENAME).write_text(token)
+        _write_private(config_dir / _TOKEN_FILENAME, token)
     except OSError as e:
         raise ConfigError(str(e)) from e
 
@@ -134,7 +134,7 @@ def _read_toml(path: Path) -> dict[str, str]:
     try:
         with path.open("rb") as fh:
             data = tomllib.load(fh)
-    except tomllib.TOMLDecodeError as e:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         import warnings
 
         warnings.warn(f"Ignoring unparseable config file {path}: {e}", stacklevel=2)
@@ -147,7 +147,14 @@ def _read_toml(path: Path) -> dict[str, str]:
 def _write_toml(path: Path, data: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f'{k} = "{_escape(v)}"' for k, v in data.items()]
-    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    _write_private(path, "\n".join(lines) + ("\n" if lines else ""))
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Writes the given text to the given file, readable by its owner only."""
+    path.touch(mode=0o600, exist_ok=True)
+    path.chmod(0o600)  # touch's mode only applies on creation
+    path.write_text(text)
 
 
 def _escape(value: str) -> str:
