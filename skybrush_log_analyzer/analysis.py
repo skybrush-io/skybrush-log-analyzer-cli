@@ -29,10 +29,9 @@ def compact(analysis: dict[str, Any]) -> dict[str, Any]:
     """
     Returns the compact view of an analysis API response.
 
-    Keeps the backend core version (always present, even when null), the note,
-    the status counts, and the test results with their name, status, title and
-    messages. Test results and status counts are ordered by severity. Drops
-    internal IDs and null fields.
+    Keeps the note, the status counts, and the test results with their name,
+    status, title and messages. Test results and status counts are ordered by
+    severity. Drops internal IDs and null fields.
     """
     tests = [
         _test_view(result)
@@ -47,7 +46,7 @@ def compact(analysis: dict[str, Any]) -> dict[str, Any]:
         "status_counts": _status_counts(tests),
         "test_results": tests,
     }
-    return {"paplan_version": analysis.get("paplan_version"), **_without_none_fields(view)}
+    return _without_none_fields(view)
 
 
 _STATUS_RANK = {
