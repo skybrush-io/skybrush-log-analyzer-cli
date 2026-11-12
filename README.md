@@ -4,6 +4,8 @@ Command line application for analyzing ArduPilot logs using [Skybrush Log Analyz
 
 Agent skill included for AI assistance.
 
+The package can also be used as a Python [library](#library).
+
 ## Install
 
 **Option A (recommended): install as a tool**
@@ -68,6 +70,25 @@ When using `uvx`, the CLI always runs the latest revision, but the installed ski
 ```bash
 uvx skybrush-log-analyzer add-skill --force
 ```
+
+## Library
+
+The package can be used as a Python library to integrate log analysis into other tools.
+
+```bash
+uv add skybrush-log-analyzer
+```
+
+```python
+from pathlib import Path
+
+from skybrush_log_analyzer.api_client import APIClient
+
+client = APIClient.login(Path("<path-to-config-dir>"), "<your-api-key>")
+analysis = client.analyze(Path("<path-to-log-file>"))
+```
+
+See the [API reference](https://skybrush-io.github.io/skybrush-log-analyzer-cli/api/api_client/) for details.
 
 ## Troubleshooting
 

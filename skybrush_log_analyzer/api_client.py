@@ -1,46 +1,156 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
+from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any
+from typing import IO, Any, Self
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx2
 
-from .errors import BadRequest, ResponseParsingFailed, ServerError, Unauthenticated
-from .typing import SuggestionCategory
-from .utils import calculate_file_hash, set_query_params
+from ._auth_client import AuthClient
+from ._config_store import clear_token, delete_api_key, save_api_key
+from .config import Config
+from .errors import (
+    APIUnreachable,
+    BadRequest,
+    ConfigError,
+    NotFound,
+    ResponseParsingFailed,
+    ServerError,
+    Unauthenticated,
+    UnknownTests,
+)
+from .typing import SuggestionCategory, TestGroup
 
-if TYPE_CHECKING:
-    from .auth_client import AuthClient
-    from .config import Config
 
-
-@dataclass(frozen=True, slots=True)
 class APIClient:
-    config: Config
-    auth: AuthClient
+    """Client of the Skybrush Log Analyzer API."""
 
-    def version(self) -> Any:
-        return self.request("/version")
+    __slots__ = ("_auth", "_config")
 
-    def tests(self, group: str = "default") -> Any:
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._auth = AuthClient(config)
+
+    @classmethod
+    def login(cls, config_dir: Path, api_key: str, *, api_url: str | None = None) -> Self:
+        """
+        Validates the given API key and stores it in the config file of the given config directory.
+
+        The account and API URLs are taken from that config file. A given `api_url`
+        is used instead of the stored one, and stored along with the API key.
+
+        On failure, the config file is left unchanged and the token stored in the
+        config directory is cleared.
+
+        Returns:
+            A client using the validated API key.
+
+        Raises:
+            Unauthenticated: The API rejected the token acquired with the API key.
+            InvalidAPIKey: The account rejected the API key.
+            AccountUnreachable: The account could not be reached or returned an unexpected response.
+            APIUnreachable: The API could not be reached.
+            ConfigError: The token or the API key could not be stored.
+            ApplicationError: The API could not validate the token.
+        """
+        config = Config.load(config_dir)
+        client = cls(
+            replace(config, api_key=api_key, api_url=config.api_url if api_url is None else api_url)
+        )
+        try:
+            client.verify_credentials()
+            save_api_key(config_dir, api_key, api_url=api_url)
+        except BaseException:
+            # The stored token may belong to the API key that failed to log in.
+            with suppress(ConfigError):
+                clear_token(config_dir)
+            raise
+        return client
+
+    @property
+    def config(self) -> Config:
+        """The config of the client."""
+        return self._config
+
+    def logout(self) -> None:
+        """
+        Invalidates the client, so any further request raises `Unauthenticated`,
+        then removes the API key and the token from the config.
+
+        Raises:
+            ConfigError: The API key or the token could not be removed.
+        """
+        self._auth.invalidate()
+        delete_api_key(self._config.config_dir)
+
+    def verify_credentials(self) -> None:
+        """
+        Acquires a fresh API token and checks that the API accepts it.
+
+        Raises:
+            Unauthenticated: No API key is configured, or the API rejected the token.
+            InvalidAPIKey: The account rejected the API key.
+            AccountUnreachable: The account could not be reached or returned an unexpected response.
+            APIUnreachable: The API could not be reached.
+            ConfigError: The token could not be stored.
+            ApplicationError: The API could not validate the token.
+        """
+        self._auth.refresh_token()
+        self.version()
+
+    def version(self) -> dict[str, Any]:
+        """Returns the version info of the API."""
+        return _json_object(self._request("/version"))
+
+    def tests(self, group: TestGroup = "default") -> list[dict[str, Any]]:
+        """Returns the descriptions of the available tests in the given test group."""
         if group == "all":
             # No "all" listing route on the backend; merge the two listings.
             merged: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for listing in (self.request("/tests"), self.request("/tests/extras")):
-                for test in listing:
+            seen: set[str | None] = set()
+            for listing in (self._request("/tests"), self._request("/tests/extras")):
+                for test in _json_object_list(listing):
                     name = test.get("name")
                     if name not in seen:
                         seen.add(name)
                         merged.append(test)
             return merged
-        return self.request("/tests/extras" if group == "extra" else "/tests")
+        return _json_object_list(self._request("/tests/extras" if group == "extra" else "/tests"))
 
-    def analyze(self, path: Path, *, test_names: list[str] | None = None) -> Any:
+    def validate_test_names(self, names: list[str], group: TestGroup = "default") -> None:
+        """
+        Checks that all the given test names belong to the given test group.
+
+        Raises:
+            UnknownTests: Some of the test names are not in the test group.
+        """
+        known = {test.get("name") for test in self.tests(group)}
+        if unknown := [name for name in names if name not in known]:
+            raise UnknownTests(f"Unknown test(s) in the {group} group: {', '.join(unknown)}")
+
+    def analyze(self, path: Path, *, test_names: list[str] | None = None) -> dict[str, Any]:
+        """
+        Uploads the given log file, runs the analysis on it, and returns the stored analysis.
+
+        Runs only the given tests when test names are given, after validating them
+        against the full test listing. The returned analysis holds the results of the
+        default tests, merged with those of the extra tests when some of the given
+        tests have no default result.
+
+        Raises:
+            UnknownTests: Some of the test names are not in any test group.
+        """
+        # Refresh the API token before file upload to try to avoid hitting
+        # token expiration during the operation.
+        self._auth.refresh_token()
+        if test_names is not None:
+            self.validate_test_names(test_names, "all")
         # POST returns the new run only; test results live on the merged by-hash view.
         with path.open("rb") as f:
-            self.request(
+            self._request(
                 "/analysis/",
                 method="POST",
                 files={"file": (path.name, f, "application/octet-stream")},
@@ -48,20 +158,25 @@ class APIClient:
                 timeout=30,
             )
 
-        return self.get_analysis(path)
+        analysis = self.get_analysis(path)
+        results = analysis.get("test_results") or []
+        if test_names is not None and not set(test_names) <= {r.get("test_name") for r in results}:
+            extra_results = self.get_analysis(path, extras=True).get("test_results") or []
+            analysis = {**analysis, "test_results": [*results, *extra_results]}
+        return analysis
 
     def get_web_login_url(self, *, intent: str | None = None) -> str:
         """Acquires a web login URL for the user, optionally with a web view intent."""
-        link = self.request("/login-ticket/", method="POST")
-        login_url = link.get("login_url") if isinstance(link, dict) else None
+        login_url = _json_object(self._request("/login-ticket/", method="POST")).get("login_url")
         if not isinstance(login_url, str) or not login_url:
             raise ResponseParsingFailed()
         if intent is not None:
-            login_url = set_query_params(login_url, intent=intent)
+            login_url = _set_query_params(login_url, intent=intent)
         return login_url
 
-    def suggest(self, *, category: SuggestionCategory, title: str, content: str) -> Any:
-        return self.request(
+    def suggest(self, *, category: SuggestionCategory, title: str, content: str) -> dict[str, Any]:
+        """Submits feedback about the analysis service and returns the submission result."""
+        response = self._request(
             "/suggestion/",
             method="POST",
             json={
@@ -70,32 +185,58 @@ class APIClient:
                 "content": content,
             },
         )
+        return _json_object(response)
 
-    def get_suggestions(self, *, released: bool | None = None) -> Any:
-        return self.request(
+    def get_suggestions(self, *, released: bool | None = None) -> list[dict[str, Any]]:
+        """
+        Returns the previously submitted feedback.
+
+        Arguments:
+            released: Whether to list only released (`True`) or only unreleased
+                (`False`) feedback, or `None` to list all of it.
+        """
+        response = self._request(
             "/suggestion/",
             params={"released": released} if released is not None else None,
         )
+        return _json_object_list(response)
 
-    def get_analysis(self, path: Path, *, extras: bool = False) -> Any:
+    def get_analysis(self, path: Path, *, extras: bool = False) -> dict[str, Any]:
+        """
+        Returns the stored analysis of the given log file.
+
+        Arguments:
+            path: The log file.
+            extras: Whether to return the results of the extra, verbose tests
+                instead of the default ones.
+
+        Raises:
+            NotFound: The log file has not been analyzed yet.
+        """
         suffix = "/extras" if extras else ""
-        return self.request(
-            f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}{suffix}",
+        response = self._request(
+            f"/analysis/by-hash/{calculate_file_hash(path)}{suffix}",
             params={"filename": path.name},
         )
+        return _json_object(response)
 
     def get_analysis_view_intent(self, path: Path) -> str:
-        """Returns the web view intent for the analysis of the given log file."""
-        result = self.request(
-            f"/analysis/by-hash/{calculate_file_hash(path.read_bytes())}/intent",
+        """
+        Returns the web view intent for the analysis of the given log file.
+
+        Raises:
+            NotFound: The log file has not been analyzed yet.
+        """
+        result = self._request(
+            f"/analysis/by-hash/{calculate_file_hash(path)}/intent",
             params={"filename": path.name},
         )
-        intent = result.get("intent") if isinstance(result, dict) else None
+        intent = _json_object(result).get("intent")
         if not isinstance(intent, str) or not intent:
             raise ResponseParsingFailed()
         return intent
 
-    def request(
+    def _request(
         self,
         path: str,
         *,
@@ -117,7 +258,7 @@ class APIClient:
         )
 
         if response.status_code == 401:
-            self.auth.refresh_token()
+            self._auth.refresh_token()
             # File bodies may have been consumed; rewind when possible.
             if files is not None:
                 for _, file_obj, _ in files.values():
@@ -138,8 +279,8 @@ class APIClient:
 
         status_code = response.status_code
         if 400 <= status_code < 500:
-            print(f"Request failed ({status_code}): {response.text}")
-            raise BadRequest(response.text)
+            error = NotFound if status_code == 404 else BadRequest
+            raise error(f"HTTP {status_code}: {response.text}")
 
         if status_code >= 500:
             raise ServerError()
@@ -160,9 +301,48 @@ class APIClient:
         json: dict[str, Any] | None,
         timeout: int | float,
     ) -> httpx2.Response:
-        with httpx2.Client(
-            base_url=self.config.api_url,
-            headers=self.auth.make_auth_headers(),
-            timeout=timeout,
-        ) as client:
-            return client.request(method, path, files=files, data=data, params=params, json=json)
+        try:
+            with httpx2.Client(
+                base_url=self._config.api_url,
+                headers=self._auth.make_auth_headers(),
+                timeout=timeout,
+            ) as client:
+                return client.request(method, path, files=files, data=data, params=params, json=json)
+        except httpx2.HTTPError as e:
+            raise APIUnreachable(str(e), url=self._config.api_url) from e
+
+
+def calculate_file_hash(path: Path) -> str:
+    """Returns the SHA-256 hex digest of the content of the given file."""
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _set_query_params(url: str, **params: str) -> str:
+    """
+    Sets the given query params on the URL.
+
+    If a set param was present in `url`, it is overwritten with the new value.
+    """
+    parts = urlsplit(url)
+    query = [
+        *(
+            (name, value)
+            for name, value in parse_qsl(parts.query, keep_blank_values=True)
+            if name not in params
+        ),
+        *params.items(),
+    ]
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def _json_object(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ResponseParsingFailed()
+    return data
+
+
+def _json_object_list(data: Any) -> list[dict[str, Any]]:
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
+        raise ResponseParsingFailed()
+    return data

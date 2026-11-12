@@ -30,10 +30,10 @@ Avoid rabbit-holes!
 - `account`: Open the Skybrush Account page in a web browser, for example to create an API key for `login`
 - `login`: Authenticate the CLI application using an API key; login is system-wide by default, the `--local` flag restricts it to the current working directory
 - `tests`: List available log tests (`tests` lists the default tests; `tests extra` the extra, verbose ones; `tests all` both groups)
-- `analyze PATH/TO/LOG.bin`: Analyze a log file (runs all tests by default) - uploads the log, runs the analysis, and prints a compact summary of the default test results (omitting passing tests). Extra, verbose tests are run and results are stored too, but only shown via `get-analysis-extras`.
-- `analyze PATH/TO/LOG.bin -t TEST_NAME`: Run only the given tests, `-t` / `--test` can be repeated:`-t TEST_A -t TEST_B`
-- `get-analysis PATH/TO/LOG.bin`: Fetch previously stored analysis results for the given log file (same compact summary as `analyze`, default test results only); add `--raw` for the untrimmed API response
-- `get-analysis-extras PATH/TO/LOG.bin`: Fetch the extra, verbose test results for the given log file (e.g. full parameter value listing) that are excluded from the default output; add `--raw` for the untrimmed API response
+- `analyze PATH/TO/LOG.bin`: Analyze a log file (runs all tests by default) - uploads the log, runs the analysis, and prints a compact summary of the default test results (messages of passing tests are omitted; add `--detailed` to include them). Extra, verbose tests are run and results are stored too, but only shown via `get-analysis-extras`.
+- `analyze PATH/TO/LOG.bin -t TEST_NAME`: Run only the given tests, `-t` / `--test` can be repeated: `-t TEST_A -t TEST_B`; unknown test names are rejected before the upload
+- `get-analysis PATH/TO/LOG.bin`: Fetch previously stored analysis results for the given log file (same compact summary as `analyze`, default test results only); `-t TEST_NAME` (repeatable) keeps only the given tests, `--detailed` includes the messages of passing tests
+- `get-analysis-extras PATH/TO/LOG.bin`: Fetch the extra, verbose test results for the given log file (e.g. full parameter value listing) that are excluded from the default output; supports `-t` and `--detailed` like `get-analysis`
 - `suggest -t "TITLE" -c CATEGORY "FEEDBACK TEXT"`: Submit valuable feedback about the analysis service to the Skybrush team; `-t` / `--title` is a short summary (1-100 characters) and `-c` / `--category` is one of `test_case`, `feature`, `improvement`, `bug`, `other`
 - `suggestions`: List previously submitted feedback; `--unreleased` limits the list to feedback that has not been released yet
 - `web`: Open the Skybrush Log Analyzer web UI in a web browser; `web PATH/TO/LOG.bin` opens the analysis of the given file if the analysis exists
@@ -41,7 +41,9 @@ Avoid rabbit-holes!
 ## Standard results vs. extras
 
 - `get-analysis` and `get-analysis-extras` are complementary: the former returns the default test results, the latter the extra, verbose ones.
-- Empty `test_results` in either output means no tests from that group have been run for the given log file yet - run `analyze` to produce them.
+- Both commands report when the log file has not been analyzed yet - run `analyze`.
+- Both commands reject `-t` test names outside their group: the test either does not exist or belongs to the other group - check the `tests` listing and use the matching command.
+- Empty `test_results` in either output means the selected tests (all tests of the group by default) have not been run for the given log file yet - run `analyze` to produce them.
 - If a test the user asked about is missing from the standard output, check the extras.
 
 ## Analysis process
@@ -58,7 +60,7 @@ STEP 2: Did the user ask to test or analyze a specific component or topic?
 
 STEP 3: Analyze the log file using the `analyze` command
 
-STEP 4: Interpret and summarize the relevant results to the user, and inform the user that detailed test results can be check in the online version of Skybrush Log Analyzer with `skybrush-log-analyzer web PATH/TO/LOG.bin`.
+STEP 4: Interpret and summarize the relevant results to the user, and inform the user that detailed test results can be checked in the online version of Skybrush Log Analyzer with `skybrush-log-analyzer web PATH/TO/LOG.bin`.
 
 ## Submitting feedback
 

@@ -38,5 +38,17 @@ markdown_extensions:
   - pymdownx.snippets
   - pymdownx.superfences
 
+plugins:
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [.]
+
 nav:
   - Skybrush Log Analyzer: index.md
+  - API reference:
+      - api_client.py: api/api_client.md
+      - config.py: api/config.md
+      - errors.py: api/errors.md
+      - analysis.py: api/analysis.md
+      - typing.py: api/typing.md
